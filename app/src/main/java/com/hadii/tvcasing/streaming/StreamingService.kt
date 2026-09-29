@@ -19,15 +19,21 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.math.BigInteger
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.security.KeyPair
+import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import java.util.Date
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocketFactory
 import javax.net.ssl.TrustManagerFactory
+import javax.security.auth.x500.X500Principal
 
 /**
  * Foreground service that:
