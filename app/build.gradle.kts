@@ -57,6 +57,7 @@ dependencies {
     // Networking / streaming
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
