@@ -6,6 +6,19 @@
     <string name="stop_button">Durdur</string>
     <string name="searching">TV aranıyor…</string>
     <string name="connected">Bağlı</string>
+    <string name="connected_https">Bağlı · HTTPS</string>
+    <string name="playing">Yayında</string>
     <string name="disconnected">Bağlantı yok</string>
+    <string name="error_label">Hata</string>
     <string name="quality_auto">Otomatik kalite</string>
+    <string name="video_link_label">Video linki</string>
+    <string name="url_placeholder">https://…</string>
+    <string name="footer_hint">Telefon ve TV aynı Wi-Fi'da olmalı. Bağlantı HTTPS ile şifrelenir.</string>
+    <string name="error_play_failed">Oynatılamadı</string>
+    <string name="error_command">Komut hatası</string>
+    <string name="receiver_waiting">TV Casting — video bekleniyor</string>
+    <string name="receiver_badge">HTTPS · yerel</string>
+    <string name="seek_label">Konum</string>
+    <string name="volume_label">Ses</string>
+    <string name="retry_count">Yeniden deneme: %1$d</string>
 </resources>
