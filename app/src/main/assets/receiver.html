@@ -11,38 +11,44 @@
   #idle{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;opacity:.85}
   #idle .dot{width:54px;height:54px;border-radius:50%;border:3px solid rgba(255,255,255,.25);border-top-color:#5ac8fa;animation:spin 1s linear infinite}
   #idle p{margin:0;font-size:20px;letter-spacing:.5px}
-  @keyframes spin{to{transform:rotate(360deg)}}
+  #status{position:absolute;top:24px;left:24px;font-size:13px;padding:6px 12px;border-radius:20px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);backdrop-filter:blur(10px)}
+  #status.ok{color:#30d158;border-color:rgba(48,209,88,.5)}
+  #status.bad{color:#ff453a;border-color:rgba(255,69,58,.5)}
   #badge{position:absolute;top:24px;right:24px;font-size:13px;padding:6px 12px;border-radius:20px;background:rgba(90,200,250,.18);border:1px solid rgba(90,200,250,.4);backdrop-filter:blur(10px)}
-  #err{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);font-size:14px;color:#ff453a;opacity:0;transition:opacity .3s}
+  #err{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);font-size:14px;color:#ff453a;opacity:0;transition:opacity .3s;background:rgba(0,0,0,.6);padding:8px 16px;border-radius:12px}
+  @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 <div id="wrap">
   <div id="idle"><div class="dot"></div><p>TV Casting — video bekleniyor</p></div>
   <video id="v" playsinline autoplay></video>
+  <div id="status" class="bad">bağlantı yok</div>
   <div id="badge">HTTPS · yerel</div>
   <div id="err"></div>
 </div>
 <script>
-const v=document.getElementById('v'), idle=document.getElementById('idle'), err=document.getElementById('err');
-let ws=null, retry=0;
+const v=document.getElementById('v'), idle=document.getElementById('idle'), err=document.getElementById('err'), statusEl=document.getElementById('status');
+let ws=null, retry=0, pingTimer=null;
 function showErr(msg){ err.textContent=msg; err.style.opacity='1'; setTimeout(()=>err.style.opacity='0',4000); }
+function setStatus(ok, text){ statusEl.className = ok ? 'ok' : 'bad'; statusEl.textContent = text; }
 function connect(){
   const proto = location.protocol==='https:'?'wss':'ws';
   ws = new WebSocket(proto+'://'+location.host+'/ws');
-  ws.onopen=()=>{retry=0;idle.style.display='none';};
+  ws.onopen=()=>{ retry=0; idle.style.display='none'; setStatus(true,'bağlı'); if(pingTimer) clearInterval(pingTimer); };
   ws.onmessage=(e)=>{
     try{
       const m=JSON.parse(e.data);
-      if(m.type==='play'){ idle.style.display='none'; v.src=m.url; v.play().catch(()=>{ showErr('Oynatılamadı'); }); }
+      if(m.type==='ping'){ try{ ws.send(JSON.stringify({type:'pong',n:m.n})); }catch(_){} }
+      else if(m.type==='play'){ idle.style.display='none'; v.src=m.url; v.play().catch(()=>{ showErr('Oynatılamadı'); }); }
       else if(m.type==='pause'){ v.pause(); }
       else if(m.type==='resume'){ v.play().catch(()=>{}); }
       else if(m.type==='seek'){ v.currentTime=m.t; }
       else if(m.type==='volume'){ v.volume=m.vol; }
-      else if(m.type==='stop'){ v.pause(); v.removeAttribute('src'); v.load(); idle.style.display='flex'; }
+      else if(m.type==='stop'){ v.pause(); v.removeAttribute('src'); v.load(); idle.style.display='flex'; setStatus(false,'durduruldu'); }
     }catch(err){ showErr('Komut hatası'); }
   };
-  ws.onclose=()=>{ idle.style.display='flex'; setTimeout(connect, Math.min(1000*Math.pow(2,retry++),8000)); };
+  ws.onclose=()=>{ idle.style.display='flex'; setStatus(false,'yeniden bağlanıyor… '+retry); setTimeout(connect, Math.min(1000*Math.pow(2,retry++),8000)); };
   ws.onerror=()=>{ try{ws.close();}catch(e){} };
 }
 connect();
