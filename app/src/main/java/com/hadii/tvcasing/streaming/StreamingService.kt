@@ -11,13 +11,12 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.hadii.tvcasing.MainActivity
 import com.hadii.tvcasing.R
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoWSD
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.math.BigInteger
@@ -30,16 +29,23 @@ import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Date
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocketFactory
-import javax.net.ssl.TrustManagerFactory
 import javax.security.auth.x500.X500Principal
+import sun.security.x509.AlgorithmId
+import sun.security.x509.CertificateAlgorithmId
+import sun.security.x509.CertificateSerialNumber
+import sun.security.x509.CertificateValidity
+import sun.security.x509.CertificateVersion
+import sun.security.x509.CertificateX509Key
+import sun.security.x509.X500Name
+import sun.security.x509.X509CertImpl
+import sun.security.x509.X509CertInfo
 
 /**
  * Foreground service that:
- *  - hosts a self-signed HTTPS server on the local Wi-Fi IP
+ *  - hosts a self-signed HTTPS + WebSocket server on the local Wi-Fi IP
  *  - serves the receiver.html page to the TV browser
  *  - pushes play/pause/seek/volume commands over a real WebSocket (NanoWSD)
  *  - keeps running while the phone is locked (PARTIAL_WAKE_LOCK)
@@ -53,6 +59,7 @@ class StreamingService : Service() {
         const val CHANNEL_ID = "tv_casting_channel"
         const val NOTIF_ID = 42
         private const val PORT = 8443
+        private const val TAG = "StreamingService"
     }
 
     private val binder = LocalBinder()
@@ -88,13 +95,14 @@ class StreamingService : Service() {
         try {
             server?.stop()
             server = HttpsStreamServer(PORT, assetsReceiverHtml()).also {
-                it.start(SSL_SERVER_FACTORY(), false)
+                it.makeSecure(SSL_SERVER_FACTORY(), null)
+                it.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
             }
             // Give the server a moment, then push the play command.
             Thread.sleep(400)
             broadcast(playCommand(url))
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "startStreaming failed", e)
         }
     }
 
@@ -208,13 +216,43 @@ class StreamingService : Service() {
 
     private fun SSL_SERVER_FACTORY(): SSLServerSocketFactory {
         // Self-signed cert generated at runtime for local-only use.
+        val keyPair = KeyPairGenerator.getInstance("RSA").apply {
+            initialize(2048, SecureRandom())
+        }.generateKeyPair()
+        val cert = generateSelfSignedCert(keyPair, "CN=TV Casting, O=Local")
+
         val ks = KeyStore.getInstance(KeyStore.getDefaultType())
         ks.load(null, null)
+        ks.setKeyEntry("key", keyPair.private, null, arrayOf(cert))
+
         val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
         kmf.init(ks, null)
+
         val ctx = SSLContext.getInstance("TLS")
         ctx.init(kmf.keyManagers, null, SecureRandom())
         return ctx.serverSocketFactory
+    }
+
+    @Suppress("DEPRECATION")
+    private fun generateSelfSignedCert(keyPair: KeyPair, dn: String): X509Certificate {
+        val now = Date()
+        val expiry = Date(now.time + 365L * 24 * 60 * 60 * 1000)
+        val info = X509CertInfo().apply {
+            set(X509CertInfo.VERSION, CertificateVersion(CertificateVersion.V3))
+            set(X509CertInfo.SERIAL_NUMBER, CertificateSerialNumber(BigInteger(64, SecureRandom())))
+            set(X509CertInfo.SUBJECT, X500Name(dn))
+            set(X509CertInfo.ISSUER, X500Name(dn))
+            set(X509CertInfo.VALIDITY, CertificateValidity(now, expiry))
+            set(X509CertInfo.KEY, CertificateX509Key(keyPair.public))
+            set(X509CertInfo.ALGORITHM_ID, CertificateAlgorithmId(AlgorithmId.get("SHA256withRSA")))
+        }
+        val cert = X509CertImpl(info)
+        cert.sign(keyPair.private, "SHA256withRSA")
+        // Re-sign so the algorithm id matches the actual signature.
+        info.set(CertificateAlgorithmId.NAME + "." + CertificateAlgorithmId.ALGORITHM, cert.get(X509CertImpl.SIG_ALG))
+        val cert2 = X509CertImpl(info)
+        cert2.sign(keyPair.private, "SHA256withRSA")
+        return cert2
     }
 
     override fun onDestroy() {
