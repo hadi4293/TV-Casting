@@ -25,9 +25,10 @@
 </div>
 <script>
 const v=document.getElementById('v'), idle=document.getElementById('idle'), err=document.getElementById('err');
-let ws=null, retry=0;
+let ws=null, retry=0, maxRetry=6;
 function showErr(msg){ err.textContent=msg; err.style.opacity='1'; setTimeout(()=>err.style.opacity='0',4000); }
 function connect(){
+  if(retry>maxRetry){ showErr('Bağlantı başarısız — sayfayı yenileyin'); idle.style.display='flex'; return; }
   const proto = location.protocol==='https:'?'wss':'ws';
   ws = new WebSocket(proto+'://'+location.host+'/ws');
   ws.onopen=()=>{retry=0;idle.style.display='none';};
