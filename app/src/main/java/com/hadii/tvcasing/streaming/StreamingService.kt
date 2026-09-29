@@ -11,10 +11,10 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.hadii.tvcasing.MainActivity
 import com.hadii.tvcasing.R
+import com.hadii.tvcasing.util.AppLog
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoWSD
 import org.json.JSONObject
@@ -22,9 +22,15 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.security.KeyStore
 import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Foreground service that:
@@ -32,6 +38,7 @@ import javax.net.ssl.SSLContext
  *  - serves the receiver.html page to the TV browser
  *  - pushes play/pause/seek/volume commands over a real WebSocket (NanoWSD)
  *  - keeps running while the phone is locked (PARTIAL_WAKE_LOCK)
+ *  - measures RTT via LatencyMonitor and adapts suggested quality
  */
 class StreamingService : Service() {
 
@@ -50,13 +57,20 @@ class StreamingService : Service() {
         fun getService(): StreamingService = this@StreamingService
     }
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private var server: HttpsStreamServer? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentUrl: String? = null
     @Volatile private var paused = false
 
+    // Cached once so we don't regenerate a 2048-bit RSA key on every start.
+    private var cachedKeyPair: java.security.KeyPair? = null
+    private var cachedCert: X509Certificate? = null
+
     // Connected TV browser sockets; CopyOnWriteArrayList so broadcast is thread-safe.
     private val sockets = CopyOnWriteArrayList<NanoWSD.WebSocket>()
+    private var latency: LatencyMonitor? = null
 
     override fun onBind(intent: Intent?): IBinder = binder
 
@@ -77,25 +91,46 @@ class StreamingService : Service() {
         startForegroundWithNotification()
         acquireWakeLock()
 
-        try {
-            server?.stop()
+        serviceScope.launch {
+            try {
+                server?.stop()
+                ensureCertificate()
+                val ip = localIp()
+                server = HttpsStreamServer(PORT, assetsReceiverHtml(), ip).also { it.start() }
+                // Give the server a moment to bind, then push the play command.
+                delay(400)
+                broadcast(playCommand(url))
+                CastingHooks.onStreamStarted(url)
+                latency = LatencyMonitor(sockets, serviceScope).also { it.start() }
+                AppLog.i("Streaming started for $url on https://$ip:$PORT")
+            } catch (e: Exception) {
+                AppLog.e("startStreaming failed", e)
+                // Surface the error to the UI via the bound ViewModel is not direct;
+                // the ViewModel polls state, so we just log here. A production app would
+                // expose an error channel; for now the UI shows 'Hata' via Error state.
+            }
+        }
+    }
+
+    private fun ensureCertificate() {
+        if (cachedKeyPair == null || cachedCert == null) {
             val ip = localIp()
-            server = HttpsStreamServer(PORT, assetsReceiverHtml(), ip).also { it.start() }
-            // Give the server a moment, then push the play command.
-            Thread.sleep(400)
-            broadcast(playCommand(url))
-        } catch (e: Exception) {
-            Log.e(TAG, "startStreaming failed", e)
+            val (kp, cert) = CertUtils.generate(ip)
+            cachedKeyPair = kp
+            cachedCert = cert
         }
     }
 
     private fun stopStreaming() {
         try { broadcast(stopCommand()) } catch (_: Exception) {}
+        latency?.stop()
+        latency = null
         server?.stop()
         server = null
         currentUrl = null
         paused = false
         releaseWakeLock()
+        CastingHooks.onStreamStopped()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -201,10 +236,11 @@ class StreamingService : Service() {
         }
 
         private fun sslFactory(): javax.net.ssl.SSLServerSocketFactory {
-            val (keyPair, cert) = CertUtils.generate(ip)
+            val kp = cachedKeyPair ?: error("certificate not initialised")
+            val cert = cachedCert ?: error("certificate not initialised")
             val ks = KeyStore.getInstance(KeyStore.getDefaultType())
             ks.load(null, null)
-            ks.setKeyEntry("key", keyPair.private, null, arrayOf(cert))
+            ks.setKeyEntry("key", kp.private, null, arrayOf(cert))
             val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
             kmf.init(ks, null)
             val ctx = SSLContext.getInstance("TLS")
@@ -222,11 +258,23 @@ class StreamingService : Service() {
         }
 
         private inner class TvSocket(handshake: IHTTPSession) : WebSocket(handshake) {
-            override fun onOpen() { sockets.add(this) }
+            override fun onOpen() {
+                sockets.add(this)
+                CastingHooks.onReceiverConnected(handshake.remoteIpAddress)
+            }
             override fun onClose(code: WebSocketFrame.CloseCode, reason: String, initiatedByRemote: Boolean) {
                 sockets.remove(this)
             }
-            override fun onMessage(message: WebSocketFrame) { /* receiver is read-only for now */ }
+            override fun onMessage(message: WebSocketFrame) {
+                // Receiver may reply with pong frames for latency measurement.
+                try {
+                    val text = message.textPayload
+                    val obj = JSONObject(text)
+                    if (obj.optString("type") == "pong") {
+                        latency?.onPong(obj.optString("n"))
+                    }
+                } catch (_: Exception) { /* ignore malformed frames */ }
+            }
             override fun onPong(pong: WebSocketFrame) {}
             override fun onException(exception: java.io.IOException) { sockets.remove(this) }
         }
@@ -234,6 +282,7 @@ class StreamingService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        latency?.stop()
         server?.stop()
         releaseWakeLock()
     }
