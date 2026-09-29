@@ -1,0 +1,194 @@
+TV-CASTING — AUDIT REPORT
+=========================
+Repo: hadi4293/TV-Casting
+Branch: fix/audit-and-improvements
+Date: 2026-09-29
+
+This file lists every defect found during a full code review of the
+TV-Casting Android project, grouped by severity. Each item is numbered
+so it can be fixed one by one.
+
+
+============================================================
+CRITICAL (app may crash or fail to build)
+============================================================
+
+1. [BUILD] app/build.gradle.kts declares KSP plugin
+   (com.google.devtools.ksp version 1.9.24-1.0.20) but no ksp()
+   dependency uses it. Remove the plugin line from build.gradle.kts.
+
+2. [CRASH] StreamingService.startStreaming() calls Thread.sleep(400)
+   on the main thread. Replace with a Handler/postDelayed or a
+   coroutine delay so the UI never freezes.
+
+3. [CRASH] StreamingService.acquireWakeLock() calls
+   wakeLock.acquire(60*60*1000L) with no try/catch. On some devices
+   this throws and aborts startStreaming. Wrap in try/catch.
+
+4. [CRASH] MainActivity.onDestroy() calls stopService() while the
+   service is still bound. Unbind first, then stop, or the process
+   can throw IllegalArgumentException. Move stop into onServiceDisconnected.
+
+5. [CRASH] receiver.html: v.play() has no .catch on the 'resume'
+   branch (only on 'play'). A rejected promise becomes an unhandled
+   rejection. Add .catch(()=>{}).
+
+6. [SECURITY] KeyStore.setKeyEntry(..., null, ...) passes a null
+   password for the private key. Some Android versions reject this.
+   Use a non-null char array (e.g. "changeit".toCharArray()).
+
+7. [SECURITY] KeyManagerFactory.init(ks, null) with a null password
+   array. Pass the same non-null password used in setKeyEntry.
+
+8. [SECURITY] SSLContext.init(kmf.keyManagers, null, SecureRandom())
+   trusts all certificates (null TrustManager). Any MITM on the LAN
+   can intercept. Pin the generated cert or install it as a trusted
+   CA on the TV side.
+
+9. [SECURITY] The self-signed cert is regenerated on every server
+   start, so the TV must re-accept it each session. Generate once,
+   persist to a file, and reuse.
+
+10. [SECURITY] No authentication on the WebSocket. Any device on the
+    same Wi-Fi can send play/pause/seek commands. Add a token check
+    in TvSocket.onMessage.
+
+
+============================================================
+HIGH (broken feature or major gap vs README)
+============================================================
+
+11. [FEATURE] README promises auto quality adaptation based on
+    measured latency. No latency measurement or quality logic exists
+    anywhere. Implement round-trip ping over the WebSocket and switch
+    quality tiers.
+
+12. [FEATURE] README promises AirPlay 2 and Matter Casting hooks.
+    No such code or interfaces exist. Either implement stubs or
+    remove the claim from the README.
+
+13. [UI] CastScreen has no seek slider and no volume slider, even
+    though StreamingService exposes seek() and setVolume(). Add both
+    controls and wire them to the ViewModel.
+
+14. [UI] strings.xml defines cast_title, enter_url_hint, cast_button,
+    stop_button, searching, connected, disconnected, quality_auto —
+    none are referenced in CastScreen.kt (hard-coded strings instead).
+    Replace hard-coded strings with stringResource().
+
+15. [UI] colors.xml defines glass_bg, glass_stroke, accent, etc. —
+    none used; CastScreen hard-codes Color(0xFF5AC8FA) etc. Use the
+    resource colors.
+
+16. [STATE] StreamingState.Error is never emitted. startStreaming
+    catches exceptions and only logs them, leaving the UI stuck on
+    Connecting. Emit StreamingState.Error(message) on failure.
+    Also emit Playing once the TV acknowledges playback.
+
+17. [STATE] togglePause() flips state between Playing and Connected
+    without knowing the real player state. Track paused in the
+    service and reflect it accurately.
+
+18. [NETWORK] localIp() returns the first non-loopback IPv4 it finds,
+    which may be a VPN or cellular address, not the Wi-Fi IP. Filter
+    by the active Wi-Fi interface (WifiManager/NetworkCapabilities).
+
+19. [NETWORK] PORT is hard-coded to 8443 with no fallback. If the
+    port is taken, start() throws. Try a small range of ports.
+
+20. [CI] .github/workflows/build-apk.yml only builds a debug APK.
+    README claims a signed-ready release artifact. Add an
+    assembleRelease step using the KEYSTORE_* secrets, or drop the
+    claim.
+
+21. [CI] No unit or instrumented tests exist. Add at least a test
+    for CertUtils.generate() and StreamingState transitions.
+
+
+============================================================
+MEDIUM (correctness / robustness)
+============================================================
+
+22. [ROBUST] broadcast() removes dead sockets but a socket that dies
+    between isOpen check and send() still throws. Catch per-socket.
+
+23. [ROBUST] onMessage in TvSocket is a no-op. The receiver cannot
+    report playback errors or position back. Parse incoming JSON and
+    surface errors to the UI.
+
+24. [ROBUST] Wake lock is acquired for a fixed 1 hour and never
+    renewed. Use acquire() (indefinite) and release on stop, or
+    renew periodically.
+
+25. [ROBUST] No handling of Wi-Fi network switches. If the phone
+    moves to another network the cert SAN no longer matches. Listen
+    for ConnectivityManager callbacks and restart the server.
+
+26. [ROBUST] receiver.html retries WebSocket with exponential backoff
+    but never gives up and never shows a final error. Cap retries
+    and show a persistent message.
+
+27. [ROBUST] No timeout on the initial connection. If the TV never
+    opens the page, the UI stays on Connecting forever. Add a
+    timeout that transitions to Error.
+
+28. [MANIFEST] android:allowBackup="true" with no backup rules.
+    Set to false or add fullBackupContent/dataExtractionRules to
+    exclude the keystore and streaming state.
+
+29. [MANIFEST] No <queries> for the TV browser intent, and no
+    intent to open the receiver URL on the TV. Consider an
+    ACTION_VIEW intent or a companion TV app.
+
+30. [DEPS] okhttp3 is declared but never imported/used. Remove it,
+    or use it for something (e.g. health checks).
+
+31. [DEPS] appcompat is declared alongside a pure Compose app.
+    Remove if unused.
+
+32. [PERMS] CHANGE_WIFI_STATE is requested but never used. Remove,
+    or actually toggle Wi-Fi as a fallback.
+
+33. [PERMS] No handling of the case where POST_NOTIFICATIONS is
+    denied on Android 13+. The foreground notification may not show.
+    Gracefully degrade or explain why it's needed.
+
+
+============================================================
+LOW (polish / hygiene)
+============================================================
+
+34. [POLISH] CastScreen uses Color(0xFF...) literals everywhere.
+    Centralize into the theme.
+
+35. [POLISH] GlassCard has no blur (RenderEffect) — only a
+    translucent gradient. Add blur for a true glassmorphism look.
+
+36. [POLISH] No dark/light theme toggle exposed; relies on
+    isSystemInDarkTheme(). Add a manual toggle.
+
+37. [POLISH] README is in English, UI strings in Turkish. Pick one
+    language for consistency.
+
+38. [POLISH] No .gitignore for build/, .gradle/, local.properties,
+    *.jks, *.keystore. Add one.
+
+39. [POLISH] versionCode/versionName hard-coded; consider CI
+    auto-increment.
+
+40. [POLISH] No logging level control; Log.e used but no debug
+    toggle. Gate verbose logs behind BuildConfig.DEBUG.
+
+
+============================================================
+EMPTY / STUB REPOS (separate from TV-Casting)
+============================================================
+
+41. CastFlow, GlassCast, cast-glass — all empty (no commits).
+42. tv-player — only index.html (238 bytes), not a real app.
+43. Nova, Nova1 — only a README stub.
+44. yeni-repo — private, only a README stub.
+    Decide: delete, or populate with real code.
+
+
+END OF AUDIT
