@@ -9,7 +9,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -43,6 +45,7 @@ class StreamingService : Service() {
         const val NOTIF_ID = 42
         private const val PORT = 8443
         private const val TAG = "StreamingService"
+        private const val KEYSTORE_PASSWORD = "changeit"
     }
 
     private val binder = LocalBinder()
@@ -54,6 +57,7 @@ class StreamingService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentUrl: String? = null
     @Volatile private var paused = false
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     // Connected TV browser sockets; CopyOnWriteArrayList so broadcast is thread-safe.
     private val sockets = CopyOnWriteArrayList<NanoWSD.WebSocket>()
@@ -81,15 +85,15 @@ class StreamingService : Service() {
             server?.stop()
             val ip = localIp()
             server = HttpsStreamServer(PORT, assetsReceiverHtml(), ip).also { it.start() }
-            // Give the server a moment, then push the play command.
-            Thread.sleep(400)
-            broadcast(playCommand(url))
+            // Give the server a moment, then push the play command (off the main thread).
+            mainHandler.postDelayed({ broadcast(playCommand(url)) }, 400)
         } catch (e: Exception) {
             Log.e(TAG, "startStreaming failed", e)
         }
     }
 
     private fun stopStreaming() {
+        mainHandler.removeCallbacksAndMessages(null)
         try { broadcast(stopCommand()) } catch (_: Exception) {}
         server?.stop()
         server = null
@@ -142,8 +146,15 @@ class StreamingService : Service() {
 
     private fun acquireWakeLock() {
         if (wakeLock == null) {
-            val pm = getSystemService(PowerManager::class.java)
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tvcasing:stream").apply { acquire(60 * 60 * 1000L) }
+            try {
+                val pm = getSystemService(PowerManager::class.java)
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tvcasing:stream").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "acquireWakeLock failed", e)
+            }
         }
     }
 
@@ -204,9 +215,9 @@ class StreamingService : Service() {
             val (keyPair, cert) = CertUtils.generate(ip)
             val ks = KeyStore.getInstance(KeyStore.getDefaultType())
             ks.load(null, null)
-            ks.setKeyEntry("key", keyPair.private, null, arrayOf(cert))
+            ks.setKeyEntry("key", keyPair.private, KEYSTORE_PASSWORD.toCharArray(), arrayOf(cert))
             val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-            kmf.init(ks, null)
+            kmf.init(ks, KEYSTORE_PASSWORD.toCharArray())
             val ctx = SSLContext.getInstance("TLS")
             ctx.init(kmf.keyManagers, null, SecureRandom())
             return ctx.serverSocketFactory
@@ -234,6 +245,7 @@ class StreamingService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        mainHandler.removeCallbacksAndMessages(null)
         server?.stop()
         releaseWakeLock()
     }
