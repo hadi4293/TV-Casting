@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import com.hadii.tvcasing.MainActivity
 import com.hadii.tvcasing.R
 import fi.iki.elonen.NanoHTTPD
+import fi.iki.elonen.NanoWSD
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -28,6 +29,7 @@ import java.security.KeyStore
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Date
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
@@ -39,7 +41,7 @@ import javax.security.auth.x500.X500Principal
  * Foreground service that:
  *  - hosts a self-signed HTTPS server on the local Wi-Fi IP
  *  - serves the receiver.html page to the TV browser
- *  - pushes play/pause/seek/volume commands over a WebSocket-like channel
+ *  - pushes play/pause/seek/volume commands over a real WebSocket (NanoWSD)
  *  - keeps running while the phone is locked (PARTIAL_WAKE_LOCK)
  */
 class StreamingService : Service() {
@@ -62,6 +64,9 @@ class StreamingService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentUrl: String? = null
 
+    // Connected TV browser sockets; CopyOnWriteArrayList so broadcast is thread-safe.
+    private val sockets = CopyOnWriteArrayList<NanoWSD.WebSocket>()
+
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,7 +87,7 @@ class StreamingService : Service() {
 
         try {
             server?.stop()
-            server = HttpsStreamServer(PORT, assetsReceiverHtml(), ::broadcast).also {
+            server = HttpsStreamServer(PORT, assetsReceiverHtml()).also {
                 it.start(SSL_SERVER_FACTORY(), false)
             }
             // Give the server a moment, then push the play command.
@@ -157,13 +162,17 @@ class StreamingService : Service() {
 
     fun receiverUrl(): String = "https://${localIp()}:$PORT/"
 
-    // ---- command channel (simple long-poll / WS-ish over HTTP for robustness) ----
-    private val subscribers = mutableListOf<NanoHTTPD.Response.IStatus>()
-    @Volatile private var lastCommand: String = ""
-
+    // ---- WebSocket command channel ----
     private fun broadcast(json: String) {
-        lastCommand = json
-        // In a full impl this would push via WebSocket; here the receiver polls /events.
+        val dead = mutableListOf<NanoWSD.WebSocket>()
+        for (ws in sockets) {
+            try {
+                if (ws.isOpen) ws.send(json) else dead.add(ws)
+            } catch (_: Exception) {
+                dead.add(ws)
+            }
+        }
+        sockets.removeAll(dead.toSet())
     }
 
     private fun playCommand(url: String) = JSONObject().apply {
@@ -171,30 +180,29 @@ class StreamingService : Service() {
     }.toString()
     private fun stopCommand() = JSONObject().apply { put("type", "stop") }.toString()
 
-    // ---- HTTPS server ----
+    // ---- HTTPS + WebSocket server ----
     private inner class HttpsStreamServer(
         port: Int,
         private val receiverHtml: String,
-        private val onCommand: (String) -> Unit,
-    ) : NanoHTTPD(port) {
+    ) : NanoWSD(port) {
 
-        override fun serve(session: IHTTPSession): Response {
+        override fun openWebSocket(handshake: IHTTPSession): WebSocket = TvSocket(handshake)
+
+        override fun serveHttp(session: IHTTPSession): Response {
             return when (session.uri) {
                 "/", "/index.html" -> newFixedLengthResponse(Response.Status.OK, "text/html", receiverHtml)
-                "/events" -> {
-                    // Long-poll: return the latest command, client reconnects.
-                    val body = lastCommand.ifEmpty { "{}" }
-                    newFixedLengthResponse(Response.Status.OK, "application/json", body)
-                }
-                "/cmd" -> {
-                    val map = HashMap<String, String>()
-                    session.parseBody(map)
-                    val raw = map["postData"] ?: ""
-                    onCommand(raw)
-                    newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}")
-                }
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
             }
+        }
+
+        private inner class TvSocket(handshake: IHTTPSession) : WebSocket(handshake) {
+            override fun onOpen() { sockets.add(this) }
+            override fun onClose(code: WebSocketFrame.CloseCode, reason: String, initiatedByRemote: Boolean) {
+                sockets.remove(this)
+            }
+            override fun onMessage(message: WebSocketFrame) { /* receiver is read-only for now */ }
+            override fun onPong(pong: WebSocketFrame) {}
+            override fun onException(exception: java.io.IOException) { sockets.remove(this) }
         }
     }
 
