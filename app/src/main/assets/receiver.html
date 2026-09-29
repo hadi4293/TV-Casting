@@ -13,6 +13,7 @@
   #idle p{margin:0;font-size:20px;letter-spacing:.5px}
   @keyframes spin{to{transform:rotate(360deg)}}
   #badge{position:absolute;top:24px;right:24px;font-size:13px;padding:6px 12px;border-radius:20px;background:rgba(90,200,250,.18);border:1px solid rgba(90,200,250,.4);backdrop-filter:blur(10px)}
+  #err{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);font-size:14px;color:#ff453a;opacity:0;transition:opacity .3s}
 </style>
 </head>
 <body>
@@ -20,10 +21,12 @@
   <div id="idle"><div class="dot"></div><p>TV Casting — video bekleniyor</p></div>
   <video id="v" playsinline autoplay></video>
   <div id="badge">HTTPS · yerel</div>
+  <div id="err"></div>
 </div>
 <script>
-const v=document.getElementById('v'), idle=document.getElementById('idle');
+const v=document.getElementById('v'), idle=document.getElementById('idle'), err=document.getElementById('err');
 let ws=null, retry=0;
+function showErr(msg){ err.textContent=msg; err.style.opacity='1'; setTimeout(()=>err.style.opacity='0',4000); }
 function connect(){
   const proto = location.protocol==='https:'?'wss':'ws';
   ws = new WebSocket(proto+'://'+location.host+'/ws');
@@ -31,13 +34,13 @@ function connect(){
   ws.onmessage=(e)=>{
     try{
       const m=JSON.parse(e.data);
-      if(m.type==='play'){ idle.style.display='none'; v.src=m.url; v.play().catch(()=>{}); }
+      if(m.type==='play'){ idle.style.display='none'; v.src=m.url; v.play().catch(()=>{ showErr('Oynatılamadı'); }); }
       else if(m.type==='pause'){ v.pause(); }
       else if(m.type==='resume'){ v.play().catch(()=>{}); }
       else if(m.type==='seek'){ v.currentTime=m.t; }
       else if(m.type==='volume'){ v.volume=m.vol; }
       else if(m.type==='stop'){ v.pause(); v.removeAttribute('src'); v.load(); idle.style.display='flex'; }
-    }catch(err){}
+    }catch(err){ showErr('Komut hatası'); }
   };
   ws.onclose=()=>{ idle.style.display='flex'; setTimeout(connect, Math.min(1000*Math.pow(2,retry++),8000)); };
   ws.onerror=()=>{ try{ws.close();}catch(e){} };

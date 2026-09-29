@@ -50,6 +50,11 @@ fun CastScreen(vm: StreamingViewModel = viewModel()) {
     var url by remember { mutableStateOf("") }
     val focus = LocalFocusManager.current
 
+    LaunchedEffect(Unit) { vm.bind() }
+    DisposableEffect(Unit) {
+        onDispose { vm.unbind() }
+    }
+
     val pulse by animateFloatAsState(
         targetValue = if (state is StreamingState.Connected) 1.06f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
@@ -128,11 +133,7 @@ fun CastScreen(vm: StreamingViewModel = viewModel()) {
                         Button(
                             onClick = {
                                 focus.clearFocus()
-                                val intent = Intent(ctx, StreamingService::class.java).apply {
-                                    action = StreamingService.ACTION_START
-                                    putExtra(StreamingService.EXTRA_URL, url.trim())
-                                }
-                                ContextCompatStart(ctx, intent)
+                                vm.start(url)
                             },
                             enabled = url.isNotBlank() && state !is StreamingState.Playing,
                             modifier = Modifier.weight(1f).height(52.dp),
@@ -144,11 +145,7 @@ fun CastScreen(vm: StreamingViewModel = viewModel()) {
                             Text("Yayınla", fontWeight = FontWeight.SemiBold)
                         }
                         OutlinedButton(
-                            onClick = {
-                                ctx.startService(Intent(ctx, StreamingService::class.java).apply {
-                                    action = StreamingService.ACTION_STOP
-                                })
-                            },
+                            onClick = { vm.stop() },
                             enabled = state is StreamingState.Playing || state is StreamingState.Connected,
                             modifier = Modifier.height(52.dp),
                             shape = RoundedCornerShape(16.dp),
@@ -161,7 +158,7 @@ fun CastScreen(vm: StreamingViewModel = viewModel()) {
             }
 
             // Transport controls
-            AnimatedVisibility(visible = state is StreamingState.Playing, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
+            AnimatedVisibility(visible = state is StreamingState.Playing || state is StreamingState.Connected, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
                 GlassCard(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier.padding(16.dp).fillMaxWidth(),
@@ -204,8 +201,4 @@ private fun ConnectionDot(state: StreamingState) {
             .clip(CircleShape)
             .background(color),
     )
-}
-
-private fun ContextCompatStart(ctx: android.content.Context, intent: Intent) {
-    androidx.core.content.ContextCompat.startForegroundService(ctx, intent)
 }

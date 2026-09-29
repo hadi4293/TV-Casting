@@ -70,6 +70,7 @@ class StreamingService : Service() {
     private var server: HttpsStreamServer? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentUrl: String? = null
+    @Volatile private var paused = false
 
     // Connected TV browser sockets; CopyOnWriteArrayList so broadcast is thread-safe.
     private val sockets = CopyOnWriteArrayList<NanoWSD.WebSocket>()
@@ -89,6 +90,7 @@ class StreamingService : Service() {
 
     private fun startStreaming(url: String) {
         currentUrl = url
+        paused = false
         startForegroundWithNotification()
         acquireWakeLock()
 
@@ -111,9 +113,23 @@ class StreamingService : Service() {
         server?.stop()
         server = null
         currentUrl = null
+        paused = false
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    fun togglePause() {
+        paused = !paused
+        broadcast(if (paused) pauseCommand() else resumeCommand())
+    }
+
+    fun seek(seconds: Double) {
+        broadcast(seekCommand(seconds))
+    }
+
+    fun setVolume(volume: Double) {
+        broadcast(volumeCommand(volume))
     }
 
     private fun startForegroundWithNotification() {
@@ -186,6 +202,10 @@ class StreamingService : Service() {
     private fun playCommand(url: String) = JSONObject().apply {
         put("type", "play"); put("url", url)
     }.toString()
+    private fun pauseCommand() = JSONObject().apply { put("type", "pause") }.toString()
+    private fun resumeCommand() = JSONObject().apply { put("type", "resume") }.toString()
+    private fun seekCommand(t: Double) = JSONObject().apply { put("type", "seek"); put("t", t) }.toString()
+    private fun volumeCommand(vol: Double) = JSONObject().apply { put("type", "volume"); put("vol", vol) }.toString()
     private fun stopCommand() = JSONObject().apply { put("type", "stop") }.toString()
 
     // ---- HTTPS + WebSocket server ----
