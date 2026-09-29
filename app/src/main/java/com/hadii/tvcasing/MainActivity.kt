@@ -45,8 +45,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // Do not stop the service here: it is bound to the ViewModel lifecycle and
+        // stopping while bound can throw IllegalArgumentException. The service stops
+        // itself via ACTION_STOP, and unbinding happens in the ViewModel's onCleared.
         super.onDestroy()
-        // Service is bound to lifecycle; stop explicitly if still running.
-        stopService(Intent(this, com.hadii.tvcasing.streaming.StreamingService::class.java))
     }
 }
