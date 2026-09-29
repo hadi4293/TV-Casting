@@ -1,3 +1,11 @@
 <resources>
     <string name="app_name">TV Casting</string>
+    <string name="cast_title">TV Casting</string>
+    <string name="enter_url_hint">Video linkini yapıştır</string>
+    <string name="cast_button">Yayınla</string>
+    <string name="stop_button">Durdur</string>
+    <string name="searching">TV aranıyor…</string>
+    <string name="connected">Bağlı</string>
+    <string name="disconnected">Bağlantı yok</string>
+    <string name="quality_auto">Otomatik kalite</string>
 </resources>

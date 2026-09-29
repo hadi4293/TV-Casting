@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>TV Casting Receiver</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;overflow:hidden}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 40%,#1c1c2e,#000)}
+  video{width:100%;height:100%;object-fit:contain;background:#000}
+  #idle{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;opacity:.85}
+  #idle .dot{width:54px;height:54px;border-radius:50%;border:3px solid rgba(255,255,255,.25);border-top-color:#5ac8fa;animation:spin 1s linear infinite}
+  #idle p{margin:0;font-size:20px;letter-spacing:.5px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #badge{position:absolute;top:24px;right:24px;font-size:13px;padding:6px 12px;border-radius:20px;background:rgba(90,200,250,.18);border:1px solid rgba(90,200,250,.4);backdrop-filter:blur(10px)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="idle"><div class="dot"></div><p>TV Casting — video bekleniyor</p></div>
+  <video id="v" playsinline autoplay></video>
+  <div id="badge">HTTPS · yerel</div>
+</div>
+<script>
+const v=document.getElementById('v'), idle=document.getElementById('idle');
+let ws=null, retry=0;
+function connect(){
+  const proto = location.protocol==='https:'?'wss':'ws';
+  ws = new WebSocket(proto+'://'+location.host+'/ws');
+  ws.onopen=()=>{retry=0;idle.style.display='none';};
+  ws.onmessage=(e)=>{
+    try{
+      const m=JSON.parse(e.data);
+      if(m.type==='play'){ idle.style.display='none'; v.src=m.url; v.play().catch(()=>{}); }
+      else if(m.type==='pause'){ v.pause(); }
+      else if(m.type==='resume'){ v.play().catch(()=>{}); }
+      else if(m.type==='seek'){ v.currentTime=m.t; }
+      else if(m.type==='volume'){ v.volume=m.vol; }
+      else if(m.type==='stop'){ v.pause(); v.removeAttribute('src'); v.load(); idle.style.display='flex'; }
+    }catch(err){}
+  };
+  ws.onclose=()=>{ idle.style.display='flex'; setTimeout(connect, Math.min(1000*Math.pow(2,retry++),8000)); };
+  ws.onerror=()=>{ try{ws.close();}catch(e){} };
+}
+connect();
+</script>
+</body>
+</html>
